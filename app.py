@@ -1,6 +1,6 @@
 import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from chatbot import chatbot, get_text, get_all_threads
 
 st.set_page_config(page_title="My Chatbot")
@@ -23,7 +23,7 @@ def new_chat():
     """Start a fresh chat."""
     new_id = make_thread_id()
     st.session_state["thread_id"] = new_id
-    st.session_state["history"] = []        # clear the screen
+    st.session_state["history"] = []
     add_thread(new_id)
 
 
@@ -38,7 +38,7 @@ def load_chat(thread_id):
             shown.append({"role": "user", "content": get_text(m.content)})
         elif isinstance(m, AIMessage):
             text = get_text(m.content)
-            if text:
+            if text:                      # skip empty AI messages (tool requests)
                 shown.append({"role": "assistant", "content": text})
     return shown
 
@@ -46,7 +46,7 @@ def load_chat(thread_id):
 # ---------- first-time setup (runs once per browser tab) ----------
 
 if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = get_all_threads()   # from the database
+    st.session_state["chat_threads"] = get_all_threads()
 
 if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = make_thread_id()
@@ -64,7 +64,6 @@ st.sidebar.title("My Chats")
 if st.sidebar.button("➕ New chat"):
     new_chat()
 
-# newest chat first
 all_threads = st.session_state["chat_threads"]
 for number, tid in reversed(list(enumerate(all_threads, start=1))):
     if st.sidebar.button(f"Chat {number}", key=tid):
@@ -76,7 +75,6 @@ for number, tid in reversed(list(enumerate(all_threads, start=1))):
 
 st.title("My Chatbot")
 
-# draw the messages of the current chat
 for msg in st.session_state["history"]:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -84,14 +82,18 @@ for msg in st.session_state["history"]:
 user_input = st.chat_input("Type here")
 
 if user_input:
-    # which notebook are we using? the current chat's name
-    CONFIG = {"configurable": {"thread_id": st.session_state["thread_id"]}}
+    CONFIG = {
+        "configurable": {"thread_id": st.session_state["thread_id"]},
+        "metadata": {"thread_id": st.session_state["thread_id"]},
+        "run_name": "chat_turn",
+    }
 
     st.session_state["history"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
     with st.chat_message("assistant"):
+        status_box = {"box": None}
 
         def token_stream():
             for chunk, metadata in chatbot.stream(
@@ -99,11 +101,22 @@ if user_input:
                 config=CONFIG,
                 stream_mode="messages",
             ):
-                if isinstance(chunk, AIMessage):
+                if isinstance(chunk, ToolMessage):
+                    # a tool just finished: show a small status line
+                    name = chunk.name or "tool"
+                    if status_box["box"] is None:
+                        status_box["box"] = st.status(f"Used tool: {name}", state="complete")
+                    else:
+                        status_box["box"].update(label=f"Used tool: {name}", state="complete")
+                elif isinstance(chunk, AIMessage):
                     text = get_text(chunk.content)
                     if text:
                         yield text
 
-        ai_text = st.write_stream(token_stream())
+        try:
+            ai_text = st.write_stream(token_stream())
+        except Exception:
+            ai_text = "Sorry, something went wrong or the AI is busy. Please try again in a minute."
+            st.write(ai_text)
 
     st.session_state["history"].append({"role": "assistant", "content": ai_text})

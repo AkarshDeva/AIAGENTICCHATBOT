@@ -6,16 +6,19 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.prebuilt import ToolNode, tools_condition      # NEW
+
+from tools import ALL_TOOLS                                    # NEW
 
 load_dotenv()
 
-# 1. THE MODEL
-llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0.7)
+# 1. MODEL
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7, max_retries=5)
+llm_with_tools = llm.bind_tools(ALL_TOOLS)                     # NEW: tell the AI about its tools
 
 
-# 2. HELPER: turn model output into plain text
+# 2. HELPER
 def get_text(content) -> str:
-    """Return plain text whether content is a string or a list of blocks."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -29,37 +32,42 @@ def get_text(content) -> str:
     return ""
 
 
-# 3. THE STATE
+# 3. STATE (unchanged)
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-# 4. THE NODE
+# 4. NODES
 def chat_node(state: ChatState):
-    reply = llm.invoke(state["messages"])
+    reply = llm_with_tools.invoke(state["messages"])           # CHANGED: use llm_with_tools
     return {"messages": [reply]}
 
+tool_node = ToolNode(ALL_TOOLS)                                # NEW: the tool runner
 
-# 5. THE MEMORY: a real file now (permanent)
+
+# 5. MEMORY (unchanged)
 connection = sqlite3.connect("chatbot.db", check_same_thread=False)
 checkpointer = SqliteSaver(conn=connection)
 
-# 6. THE GRAPH
+
+# 6. GRAPH
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
+graph.add_node("tools", tool_node)                             # NEW
+
 graph.add_edge(START, "chat_node")
-graph.add_edge("chat_node", END)
+graph.add_conditional_edges("chat_node", tools_condition)      # NEW: tools or END?
+graph.add_edge("tools", "chat_node")                           # NEW: result goes back to the AI
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
 
-# 7. NEW: ask the database "which chats exist?"
+# 7. List saved chats (unchanged)
 def get_all_threads():
-    """Return all chat names saved in the database (oldest first)."""
     found = []
-    for saved in checkpointer.list(None):          # None = all chats
+    for saved in checkpointer.list(None):
         tid = saved.config["configurable"]["thread_id"]
-        if tid not in found:                        # skip repeats
+        if tid not in found:
             found.append(tid)
-    found.reverse()                                 # list() gives newest first
+    found.reverse()
     return found
