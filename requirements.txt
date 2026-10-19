@@ -3,3 +3,4 @@ langchain
 langchain-google-genai
 python-dotenv
 streamlit
+langgraph-checkpoint-sqlite

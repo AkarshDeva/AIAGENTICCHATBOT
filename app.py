@@ -1,16 +1,82 @@
+import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage
-from chatbot import chatbot, get_text
+from langchain_core.messages import HumanMessage, AIMessage
+from chatbot import chatbot, get_text, get_all_threads
 
-st.title("My Chatbot")
+st.set_page_config(page_title="My Chatbot")
 
-CONFIG = {"configurable": {"thread_id": "thread-1"}}
 
-# session_state survives Streamlit re-runs; it stores what is SHOWN on screen
+# ---------- small helper functions ----------
+
+def make_thread_id():
+    """Make a new unique chat name."""
+    return str(uuid.uuid4())
+
+
+def add_thread(thread_id):
+    """Add the chat name to the list (only once)."""
+    if thread_id not in st.session_state["chat_threads"]:
+        st.session_state["chat_threads"].append(thread_id)
+
+
+def new_chat():
+    """Start a fresh chat."""
+    new_id = make_thread_id()
+    st.session_state["thread_id"] = new_id
+    st.session_state["history"] = []        # clear the screen
+    add_thread(new_id)
+
+
+def load_chat(thread_id):
+    """Open an old chat from the database and rebuild its messages for the screen."""
+    state = chatbot.get_state({"configurable": {"thread_id": thread_id}})
+    saved_messages = state.values.get("messages", [])
+
+    shown = []
+    for m in saved_messages:
+        if isinstance(m, HumanMessage):
+            shown.append({"role": "user", "content": get_text(m.content)})
+        elif isinstance(m, AIMessage):
+            text = get_text(m.content)
+            if text:
+                shown.append({"role": "assistant", "content": text})
+    return shown
+
+
+# ---------- first-time setup (runs once per browser tab) ----------
+
+if "chat_threads" not in st.session_state:
+    st.session_state["chat_threads"] = get_all_threads()   # from the database
+
+if "thread_id" not in st.session_state:
+    st.session_state["thread_id"] = make_thread_id()
+
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-# Redraw old messages
+add_thread(st.session_state["thread_id"])
+
+
+# ---------- sidebar ----------
+
+st.sidebar.title("My Chats")
+
+if st.sidebar.button("➕ New chat"):
+    new_chat()
+
+# newest chat first
+all_threads = st.session_state["chat_threads"]
+for number, tid in reversed(list(enumerate(all_threads, start=1))):
+    if st.sidebar.button(f"Chat {number}", key=tid):
+        st.session_state["thread_id"] = tid
+        st.session_state["history"] = load_chat(tid)
+
+
+# ---------- main screen ----------
+
+st.title("My Chatbot")
+
+# draw the messages of the current chat
 for msg in st.session_state["history"]:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -18,12 +84,13 @@ for msg in st.session_state["history"]:
 user_input = st.chat_input("Type here")
 
 if user_input:
-    # show and save the user's message
+    # which notebook are we using? the current chat's name
+    CONFIG = {"configurable": {"thread_id": st.session_state["thread_id"]}}
+
     st.session_state["history"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    # stream the AI's answer
     with st.chat_message("assistant"):
 
         def token_stream():
@@ -32,9 +99,10 @@ if user_input:
                 config=CONFIG,
                 stream_mode="messages",
             ):
-                text = get_text(chunk.content)
-                if text:
-                    yield text
+                if isinstance(chunk, AIMessage):
+                    text = get_text(chunk.content)
+                    if text:
+                        yield text
 
         ai_text = st.write_stream(token_stream())
 
