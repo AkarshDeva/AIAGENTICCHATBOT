@@ -6,3 +6,7 @@ streamlit
 langgraph-checkpoint-sqlite
 ddgs
 requests
+langchain-community
+langchain-text-splitters
+faiss-cpu
+pypdf
